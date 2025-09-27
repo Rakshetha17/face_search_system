@@ -1,5 +1,5 @@
 import tkinter as tk
-from tkinter import filedialog, messagebox, Frame, Label, Button, Canvas, Scrollbar, Toplevel, Listbox, MULTIPLE
+from tkinter import filedialog, messagebox, Frame, Label, Button, Canvas, Scrollbar, Toplevel
 from tkinter import ttk
 from PIL import Image, ImageTk
 import os
@@ -8,17 +8,17 @@ import face_recognition
 import numpy as np
 import threading
 
-class FaceSelectionDialog:
-    def __init__(self, parent, face_images, face_locations, full_image_path):
+class MultiFaceSelectionDialog:
+    def __init__(self, parent, image_path, face_locations, face_encodings):
         self.parent = parent
-        self.face_images = face_images
+        self.image_path = image_path
         self.face_locations = face_locations
-        self.full_image_path = full_image_path
-        self.selected_faces = set()  # Track multiple selected faces
+        self.face_encodings = face_encodings
+        self.selected_face_indices = []  # Store selected face indices
         
         self.dialog = Toplevel(parent)
-        self.dialog.title("Select Faces to Use as Reference")
-        self.dialog.geometry("800x600")
+        self.dialog.title("Select Faces for Matching")
+        self.dialog.geometry("750x650")
         self.dialog.configure(bg="#f0f0f0")
         self.dialog.transient(parent)
         self.dialog.grab_set()
@@ -32,36 +32,53 @@ class FaceSelectionDialog:
         self.create_widgets()
         
     def create_widgets(self):
-        # Title and instructions
-        title = Label(self.dialog, text="Select Faces to Use as New Reference", 
+        main_frame = Frame(self.dialog, bg="#f0f0f0")
+        main_frame.pack(fill="both", expand=True, padx=15, pady=15)
+        
+        # Title
+        title = Label(main_frame, text="Multiple Faces Detected - Select Faces for Matching", 
                      font=("Arial", 14, "bold"), bg="#f0f0f0")
         title.pack(pady=10)
         
-        instruction = Label(self.dialog, 
-                           text="Click on faces to select/deselect. All selected faces will be used for similarity matching.", 
-                           font=("Arial", 10), bg="#f0f0f0", wraplength=700)
+        # Instructions
+        instruction_text = (
+            "Select which faces to use for similarity matching:\n"
+            "• Select one face → match images containing that specific face\n"
+            "• Select multiple faces → match images containing ANY of the selected faces"
+        )
+        instruction = Label(main_frame, text=instruction_text,
+                           font=("Arial", 10), bg="#f0f0f0", justify="left")
         instruction.pack(pady=5)
         
-        # Full image preview
-        full_img_frame = Frame(self.dialog, bg="#ffffff", relief="sunken", borderwidth=1)
-        full_img_frame.pack(pady=10, padx=20, fill="x")
+        # Original image preview
+        orig_frame = Frame(main_frame, bg="#ffffff", relief="sunken", borderwidth=1)
+        orig_frame.pack(pady=10, fill="x", padx=20)
         
         try:
-            full_img = Image.open(self.full_image_path)
-            full_img.thumbnail((300, 200), Image.Resampling.LANCZOS)
-            self.full_photo = ImageTk.PhotoImage(full_img)
-            full_img_label = Label(full_img_frame, image=self.full_photo, bg="#ffffff")
-            full_img_label.pack(pady=10)
+            orig_img = Image.open(self.image_path)
+            orig_img.thumbnail((300, 200), Image.Resampling.LANCZOS)
+            self.orig_photo = ImageTk.PhotoImage(orig_img)
+            orig_label = Label(orig_frame, image=self.orig_photo, bg="#ffffff")
+            orig_label.pack(pady=5)
+            
+            filename_label = Label(orig_frame, text=f"Reference: {os.path.basename(self.image_path)}", 
+                                  font=("Arial", 9), bg="#ffffff")
+            filename_label.pack(pady=2)
         except Exception as e:
-            Label(full_img_frame, text="Could not load full image", bg="#ffffff").pack(pady=10)
+            Label(orig_frame, text="Could not load original image", bg="#ffffff").pack(pady=5)
         
         # Faces selection area
-        faces_frame = Frame(self.dialog, bg="#f0f0f0")
-        faces_frame.pack(fill="both", expand=True, padx=20, pady=10)
+        faces_label = Label(main_frame, text="Detected Faces (click to select/deselect):", 
+                           font=("Arial", 11, "bold"), bg="#f0f0f0")
+        faces_label.pack(pady=(15, 5))
         
         # Canvas for scrollable face previews
-        canvas = Canvas(faces_frame, bg="#f0f0f0")
-        scrollbar = Scrollbar(faces_frame, orient="vertical", command=canvas.yview)
+        canvas_frame = Frame(main_frame, bg="#f0f0f0", height=250)
+        canvas_frame.pack(fill="both", expand=True, pady=5)
+        canvas_frame.pack_propagate(False)
+        
+        canvas = Canvas(canvas_frame, bg="#f0f0f0")
+        scrollbar = Scrollbar(canvas_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = Frame(canvas, bg="#f0f0f0")
         
         scrollable_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
@@ -75,254 +92,162 @@ class FaceSelectionDialog:
         self.face_photos = []
         self.face_buttons = []
         
-        cols = 4
-        for idx, face_img in enumerate(self.face_images):
-            face_frame = Frame(scrollable_frame, bg="#ffffff", relief="raised", 
-                             borderwidth=1, padx=5, pady=5)
-            face_frame.grid(row=idx // cols, column=idx % cols, padx=10, pady=10, sticky="nsew")
+        try:
+            pil_image = Image.open(self.image_path)
+            cols = 4
             
-            # Create thumbnail
-            face_img.thumbnail((120, 120), Image.Resampling.LANCZOS)
-            photo = ImageTk.PhotoImage(face_img)
-            self.face_photos.append(photo)
-            
-            # Clickable face button
-            face_btn = Button(face_frame, image=photo, 
-                            command=lambda i=idx: self.toggle_face_selection(i),
-                            relief="flat", bg="#ffffff", cursor="hand2")
-            face_btn.pack(pady=5)
-            self.face_buttons.append(face_btn)
-            
-            # Face number label
-            face_label = Label(face_frame, text=f"Face {idx + 1}", 
-                             font=("Arial", 9), bg="#ffffff")
-            face_label.pack(pady=2)
+            for idx, location in enumerate(self.face_locations):
+                top, right, bottom, left = location
+                
+                # Expand crop area slightly for better preview
+                margin = 15
+                expanded_top = max(0, top - margin)
+                expanded_bottom = min(pil_image.height, bottom + margin)
+                expanded_left = max(0, left - margin)
+                expanded_right = min(pil_image.width, right + margin)
+                
+                face_img = pil_image.crop((expanded_left, expanded_top, expanded_right, expanded_bottom))
+                
+                face_frame = Frame(scrollable_frame, bg="#ffffff", relief="raised", 
+                                 borderwidth=1, padx=5, pady=5)
+                face_frame.grid(row=idx // cols, column=idx % cols, padx=8, pady=8, sticky="nsew")
+                
+                # Create thumbnail
+                face_img.thumbnail((100, 100), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(face_img)
+                self.face_photos.append(photo)
+                
+                # Clickable face button
+                face_btn = Button(face_frame, image=photo, 
+                                command=lambda i=idx: self.toggle_face_selection(i),
+                                relief="flat", bg="#ffffff", cursor="hand2")
+                face_btn.pack(pady=3)
+                self.face_buttons.append(face_btn)
+                
+                # Face number and selection indicator
+                face_info_frame = Frame(face_frame, bg="#ffffff")
+                face_info_frame.pack(fill="x", pady=2)
+                
+                face_label = Label(face_info_frame, text=f"Face {idx + 1}", 
+                                 font=("Arial", 9, "bold"), bg="#ffffff")
+                face_label.pack(side="left")
+                
+                # Selection indicator (initially hidden)
+                selection_indicator = Label(face_info_frame, text="✓", 
+                                          font=("Arial", 12, "bold"), bg="#ffffff", fg="green")
+                selection_indicator.pack(side="right")
+                selection_indicator.pack_forget()  # Hide initially
+                
+                # Store indicator reference
+                face_btn.selection_indicator = selection_indicator
+                
+        except Exception as e:
+            error_label = Label(scrollable_frame, text=f"Error loading faces: {str(e)}", 
+                              font=("Arial", 10), bg="#f0f0f0")
+            error_label.pack(pady=20)
         
-        # Button frame
-        button_frame = Frame(self.dialog, bg="#f0f0f0")
-        button_frame.pack(pady=10)
+        # Selection control buttons
+        control_frame = Frame(main_frame, bg="#f0f0f0")
+        control_frame.pack(pady=10)
         
-        # Select All button
-        select_all_btn = Button(button_frame, text="Select All Faces", 
+        select_all_btn = Button(control_frame, text="Select All Faces", 
                               command=self.select_all_faces,
-                              font=("Arial", 10), bg="#2196F3", fg="white", padx=15)
+                              font=("Arial", 10), bg="#2196F3", fg="white", padx=10, pady=3)
         select_all_btn.pack(side="left", padx=5)
         
-        # Clear Selection button
-        clear_btn = Button(button_frame, text="Clear Selection", 
+        clear_btn = Button(control_frame, text="Clear Selection", 
                          command=self.clear_selection,
-                         font=("Arial", 10), bg="#FF9800", fg="white", padx=15)
+                         font=("Arial", 10), bg="#FF9800", fg="white", padx=10, pady=3)
         clear_btn.pack(side="left", padx=5)
         
-        # OK button (initially disabled)
-        self.ok_btn = Button(button_frame, text="Use Selected Faces", 
-                           command=self.ok_clicked,
-                           font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", 
-                           state="disabled", padx=20, pady=5)
-        self.ok_btn.pack(side="left", padx=10)
+        # Action buttons
+        button_frame = Frame(main_frame, bg="#f0f0f0")
+        button_frame.pack(pady=15)
         
-        # Cancel button
+        # Use Selected Faces button (initially disabled)
+        self.use_btn = Button(button_frame, text="Use Selected Faces for Matching", 
+                            command=self.use_selected_faces,
+                            font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", 
+                            state="disabled", padx=20, pady=6)
+        self.use_btn.pack(side="left", padx=10)
+        
         cancel_btn = Button(button_frame, text="Cancel", 
-                          command=self.cancel_clicked,
-                          font=("Arial", 10), bg="#f44336", fg="white", padx=15)
-        cancel_btn.pack(side="left", padx=5)
+                          command=self.cancel,
+                          font=("Arial", 10), bg="#f44336", fg="white", padx=15, pady=4)
+        cancel_btn.pack(side="left", padx=10)
         
     def toggle_face_selection(self, index):
-        if index in self.selected_faces:
-            self.selected_faces.remove(index)
-            self.face_buttons[index].config(relief="flat", borderwidth=0, bg="#ffffff")
+        """Toggle selection for a specific face"""
+        if index in self.selected_face_indices:
+            # Deselect face
+            self.selected_face_indices.remove(index)
+            self.face_buttons[index].config(relief="flat", bg="#ffffff")
+            self.face_buttons[index].selection_indicator.pack_forget()
         else:
-            self.selected_faces.add(index)
-            self.face_buttons[index].config(relief="solid", borderwidth=3, bg="#e3f2fd")
+            # Select face
+            self.selected_face_indices.append(index)
+            self.face_buttons[index].config(relief="solid", bg="#e3f2fd", borderwidth=3)
+            self.face_buttons[index].selection_indicator.pack(side="right")
         
-        # Update OK button state
-        if self.selected_faces:
-            self.ok_btn.config(state="normal", bg="#45a049")
-        else:
-            self.ok_btn.config(state="disabled", bg="#4CAF50")
+        self.update_use_button()
     
     def select_all_faces(self):
-        self.selected_faces = set(range(len(self.face_images)))
+        """Select all faces"""
+        self.selected_face_indices = list(range(len(self.face_locations)))
         for i, btn in enumerate(self.face_buttons):
-            btn.config(relief="solid", borderwidth=3, bg="#e3f2fd")
-        self.ok_btn.config(state="normal", bg="#45a049")
+            btn.config(relief="solid", bg="#e3f2fd", borderwidth=3)
+            btn.selection_indicator.pack(side="right")
+        self.update_use_button()
     
     def clear_selection(self):
-        self.selected_faces.clear()
+        """Clear all selections"""
+        self.selected_face_indices.clear()
         for btn in self.face_buttons:
-            btn.config(relief="flat", borderwidth=0, bg="#ffffff")
-        self.ok_btn.config(state="disabled", bg="#4CAF50")
+            btn.config(relief="flat", bg="#ffffff")
+            btn.selection_indicator.pack_forget()
+        self.update_use_button()
     
-    def ok_clicked(self):
-        if self.selected_faces:
+    def update_use_button(self):
+        """Update the use button text and state based on selection"""
+        selected_count = len(self.selected_face_indices)
+        
+        if selected_count > 0:
+            self.use_btn.config(state="normal", bg="#45a049")
+            if selected_count == 1:
+                face_num = self.selected_face_indices[0] + 1
+                self.use_btn.config(text=f"Use Face {face_num} for Matching")
+            else:
+                self.use_btn.config(text=f"Use {selected_count} Faces for Matching")
+        else:
+            self.use_btn.config(state="disabled", bg="#4CAF50")
+            self.use_btn.config(text="Use Selected Faces for Matching")
+    
+    def use_selected_faces(self):
+        """Confirm selection and close dialog"""
+        if self.selected_face_indices:
             self.dialog.destroy()
+        else:
+            messagebox.showwarning("No Selection", "Please select at least one face to continue.")
     
-    def cancel_clicked(self):
-        self.selected_faces.clear()
+    def cancel(self):
+        """Cancel selection"""
+        self.selected_face_indices.clear()
         self.dialog.destroy()
     
     def wait_for_selection(self):
+        """Wait for user selection and return selected face encodings"""
         self.parent.wait_window(self.dialog)
-        return sorted(self.selected_faces) if self.selected_faces else None
-
-class FileManagementDialog:
-    def __init__(self, parent, selected_images, folder_path):
-        self.parent = parent
-        self.selected_images = selected_images
-        self.folder_path = folder_path
-        self.operation = None
         
-        self.dialog = Toplevel(parent)
-        self.dialog.title("File Management")
-        self.dialog.geometry("600x500")
-        self.dialog.configure(bg="#f0f0f0")
-        self.dialog.transient(parent)
-        self.dialog.grab_set()
-        
-        # Center the dialog
-        self.dialog.update_idletasks()
-        x = parent.winfo_x() + (parent.winfo_width() - self.dialog.winfo_width()) // 2
-        y = parent.winfo_y() + (parent.winfo_height() - self.dialog.winfo_height()) // 2
-        self.dialog.geometry(f"+{x}+{y}")
-        
-        self.create_widgets()
-        
-    def create_widgets(self):
-        # Title
-        title = Label(self.dialog, text="File Management", 
-                     font=("Arial", 16, "bold"), bg="#f0f0f0")
-        title.pack(pady=10)
-        
-        # Selected files info
-        info_text = f"Selected {len(self.selected_images)} files:"
-        info_label = Label(self.dialog, text=info_text, 
-                          font=("Arial", 11), bg="#f0f0f0")
-        info_label.pack(pady=5)
-        
-        # File listbox
-        listbox_frame = Frame(self.dialog, bg="#f0f0f0")
-        listbox_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        self.listbox = Listbox(listbox_frame, selectmode=MULTIPLE, 
-                              font=("Arial", 10), bg="white")
-        scrollbar = Scrollbar(listbox_frame, orient="vertical", command=self.listbox.yview)
-        self.listbox.configure(yscrollcommand=scrollbar.set)
-        
-        for img_path in self.selected_images:
-            self.listbox.insert(tk.END, os.path.basename(img_path))
-        
-        # Select all files by default
-        for i in range(len(self.selected_images)):
-            self.listbox.select_set(i)
-        
-        self.listbox.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        
-        # Operation selection
-        op_frame = Frame(self.dialog, bg="#f0f0f0")
-        op_frame.pack(pady=10)
-        
-        Label(op_frame, text="Operation:", font=("Arial", 11), 
-             bg="#f0f0f0").pack(side="left", padx=5)
-        
-        self.op_var = tk.StringVar(value="copy")
-        copy_btn = tk.Radiobutton(op_frame, text="Copy", variable=self.op_var, 
-                                value="copy", bg="#f0f0f0", font=("Arial", 10))
-        copy_btn.pack(side="left", padx=10)
-        
-        cut_btn = tk.Radiobutton(op_frame, text="Cut", variable=self.op_var, 
-                               value="cut", bg="#f0f0f0", font=("Arial", 10))
-        cut_btn.pack(side="left", padx=10)
-        
-        # Destination selection
-        dest_frame = Frame(self.dialog, bg="#f0f0f0")
-        dest_frame.pack(pady=10, padx=20, fill="x")
-        
-        Label(dest_frame, text="Destination Folder:", font=("Arial", 11), 
-             bg="#f0f0f0").pack(anchor="w")
-        
-        dest_btn_frame = Frame(dest_frame, bg="#f0f0f0")
-        dest_btn_frame.pack(fill="x", pady=5)
-        
-        self.dest_var = tk.StringVar()
-        dest_entry = tk.Entry(dest_btn_frame, textvariable=self.dest_var, 
-                             font=("Arial", 10), width=40)
-        dest_entry.pack(side="left", fill="x", expand=True, padx=(0, 10))
-        
-        browse_btn = Button(dest_btn_frame, text="Browse", 
-                          command=self.browse_destination,
-                          font=("Arial", 9), bg="#2196F3", fg="white")
-        browse_btn.pack(side="right")
-        
-        # Button frame
-        button_frame = Frame(self.dialog, bg="#f0f0f0")
-        button_frame.pack(pady=15)
-        
-        # Execute button
-        execute_btn = Button(button_frame, text="Execute Operation", 
-                           command=self.execute_operation,
-                           font=("Arial", 12, "bold"), bg="#4CAF50", fg="white", 
-                           padx=20, pady=5)
-        execute_btn.pack(side="left", padx=10)
-        
-        # Cancel button
-        cancel_btn = Button(button_frame, text="Cancel", 
-                          command=self.cancel_operation,
-                          font=("Arial", 10), bg="#f44336", fg="white", padx=15)
-        cancel_btn.pack(side="left", padx=10)
-        
-    def browse_destination(self):
-        folder = filedialog.askdirectory(title="Select destination folder")
-        if folder:
-            self.dest_var.set(folder)
-    
-    def execute_operation(self):
-        if not self.dest_var.get():
-            messagebox.showwarning("Warning", "Please select a destination folder.")
-            return
-        
-        selected_indices = self.listbox.curselection()
-        if not selected_indices:
-            messagebox.showwarning("Warning", "Please select files to operate on.")
-            return
-        
-        operation = self.op_var.get()
-        dest_folder = self.dest_var.get()
-        
-        try:
-            success_count = 0
-            for idx in selected_indices:
-                src_path = self.selected_images[idx]
-                filename = os.path.basename(src_path)
-                dest_path = os.path.join(dest_folder, filename)
-                
-                if operation == "copy":
-                    shutil.copy2(src_path, dest_path)
-                    success_count += 1
-                else:  # cut
-                    shutil.move(src_path, dest_path)
-                    success_count += 1
-            
-            messagebox.showinfo("Success", 
-                              f"Successfully {operation}ed {success_count} files to:\n{dest_folder}")
-            self.operation = operation
-            self.dialog.destroy()
-            
-        except Exception as e:
-            messagebox.showerror("Error", f"Error during file operation: {e}")
-    
-    def cancel_operation(self):
-        self.operation = None
-        self.dialog.destroy()
-    
-    def wait_for_operation(self):
-        self.parent.wait_window(self.dialog)
-        return self.operation
+        if self.selected_face_indices:
+            # Return the encodings of selected faces
+            selected_encodings = [self.face_encodings[i] for i in sorted(self.selected_face_indices)]
+            return selected_encodings
+        return None
 
 class FaceSimilarityApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("Face Similarity Finder with File Management")
+        self.root.title("Advanced Face Similarity Finder with Multi-Face Selection")
         self.root.geometry("1200x800")
         self.root.configure(bg="#f0f0f0")
 
@@ -335,8 +260,8 @@ class FaceSimilarityApp:
         self.selected_images = set()
 
         # Header
-        header = Label(root, text="Face Similarity Finder with File Management", 
-                      font=("Arial", 18, "bold"), bg="#f0f0f0", fg="#333")
+        header = Label(root, text="Advanced Face Similarity Finder with Multi-Face Selection", 
+                      font=("Arial", 16, "bold"), bg="#f0f0f0", fg="#333")
         header.pack(pady=20)
 
         # Controls Frame
@@ -344,15 +269,15 @@ class FaceSimilarityApp:
         controls.pack(pady=10)
 
         # Row 1: Main controls
-        self.btn_select_folder = Button(controls, text="Select Folder with Images", 
+        self.btn_select_folder = Button(controls, text="📁 Select Folder with Images", 
                                        command=self.select_folder, font=("Arial", 12, "bold"),
                                        bg="#4CAF50", fg="white", padx=20, pady=10)
-        self.btn_select_folder.grid(row=0, column=0, padx=20, pady=5)
+        self.btn_select_folder.grid(row=0, column=0, padx=15, pady=5)
 
-        self.btn_select_query = Button(controls, text="Select Reference Image", 
+        self.btn_select_query = Button(controls, text="🔍 Select Reference Image", 
                                       command=self.select_query_image, font=("Arial", 12, "bold"),
                                       bg="#2196F3", fg="white", padx=20, pady=10)
-        self.btn_select_query.grid(row=0, column=1, padx=20, pady=5)
+        self.btn_select_query.grid(row=0, column=1, padx=15, pady=5)
         self.btn_select_query.config(state="disabled")
 
         # Tolerance Slider
@@ -363,26 +288,37 @@ class FaceSimilarityApp:
                                    bg="#f0f0f0", font=("Arial", 10))
         tolerance_slider.grid(row=0, column=3, padx=10, pady=5)
 
-        # Row 2: Navigation and file management
-        self.btn_back = Button(controls, text="← Back to Previous Search", 
+        # Row 2: Action buttons
+        self.btn_back = Button(controls, text="↶ Back to Previous Search", 
                               command=self.navigate_back, font=("Arial", 10),
-                              bg="#607D8B", fg="white", padx=15, pady=5, state="disabled")
-        self.btn_back.grid(row=1, column=0, padx=20, pady=5)
+                              bg="#607D8B", fg="white", padx=15, pady=6, state="disabled")
+        self.btn_back.grid(row=1, column=0, padx=15, pady=5)
 
-        self.btn_file_manage = Button(controls, text="📁 Manage Selected Files", 
-                                     command=self.manage_files, font=("Arial", 10, "bold"),
-                                     bg="#FF9800", fg="white", padx=15, pady=5, state="disabled")
-        self.btn_file_manage.grid(row=1, column=1, padx=20, pady=5)
+        self.btn_use_selected = Button(controls, text="⭐ Use Selected as Reference", 
+                                      command=self.use_selected_as_reference, font=("Arial", 10, "bold"),
+                                      bg="#9C27B0", fg="white", padx=15, pady=6, state="disabled")
+        self.btn_use_selected.grid(row=1, column=1, padx=15, pady=5)
 
-        self.btn_select_all = Button(controls, text="Select All Results", 
+        self.btn_copy = Button(controls, text="📋 Copy Selected", 
+                              command=self.copy_selected_files, font=("Arial", 10, "bold"),
+                              bg="#009688", fg="white", padx=15, pady=6, state="disabled")
+        self.btn_copy.grid(row=1, column=2, padx=15, pady=5)
+
+        self.btn_cut = Button(controls, text="✂️ Cut Selected", 
+                             command=self.cut_selected_files, font=("Arial", 10, "bold"),
+                             bg="#FF5722", fg="white", padx=15, pady=6, state="disabled")
+        self.btn_cut.grid(row=1, column=3, padx=15, pady=5)
+
+        # Row 3: Selection management
+        self.btn_select_all = Button(controls, text="✓ Select All Results", 
                                     command=self.select_all_results, font=("Arial", 10),
-                                    bg="#9C27B0", fg="white", padx=15, pady=5, state="disabled")
-        self.btn_select_all.grid(row=1, column=2, padx=20, pady=5)
+                                    bg="#3F51B5", fg="white", padx=15, pady=5, state="disabled")
+        self.btn_select_all.grid(row=2, column=0, padx=15, pady=5)
 
-        self.btn_clear_selection = Button(controls, text="Clear Selection", 
+        self.btn_clear_selection = Button(controls, text="✗ Clear Selection", 
                                          command=self.clear_selection, font=("Arial", 10),
                                          bg="#f44336", fg="white", padx=15, pady=5, state="disabled")
-        self.btn_clear_selection.grid(row=1, column=3, padx=20, pady=5)
+        self.btn_clear_selection.grid(row=2, column=1, padx=15, pady=5)
 
         # Progress Bar
         self.progress = ttk.Progressbar(root, orient="horizontal", length=400, mode="indeterminate")
@@ -393,9 +329,14 @@ class FaceSimilarityApp:
         self.status_label = Label(root, text="", font=("Arial", 11), bg="#f0f0f0", fg="#666")
         self.status_label.pack(pady=5)
 
+        # Instruction Label
+        self.instruction_label = Label(root, text="", font=("Arial", 10, "italic"), 
+                                      bg="#f0f0f0", fg="#2196F3")
+        self.instruction_label.pack(pady=2)
+
         # Matches Frame
         self.matches_frame = Frame(root, bg="#ffffff", relief="sunken", borderwidth=2)
-        self.matches_frame.pack(fill="both", expand=True, padx=20, pady=20)
+        self.matches_frame.pack(fill="both", expand=True, padx=20, pady=15)
 
         self.match_photos = []
         self.image_frames = {}
@@ -407,7 +348,7 @@ class FaceSimilarityApp:
             self.reference_encodings.clear()
             self.search_history.clear()
             self.selected_images.clear()
-            self.update_file_management_buttons()
+            self.update_ui_state()
             self.btn_back.config(state="disabled")
             self.status_label.config(text="Loading and processing images...")
             self.progress.start()
@@ -428,6 +369,7 @@ class FaceSimilarityApp:
                 img = face_recognition.load_image_file(path)
                 face_locations = face_recognition.face_locations(img)
                 
+                # Use cropped faces for encoding (internal matching)
                 face_encodings = []
                 for location in face_locations:
                     top, right, bottom, left = location
@@ -436,6 +378,7 @@ class FaceSimilarityApp:
                     if encoding:
                         face_encodings.append(encoding[0])
                     else:
+                        # Fallback to full image encoding if cropped face fails
                         encoding = face_recognition.face_encodings(img, [location])
                         if encoding:
                             face_encodings.append(encoding[0])
@@ -475,6 +418,7 @@ class FaceSimilarityApp:
             img = face_recognition.load_image_file(path)
             face_locations = face_recognition.face_locations(img)
             
+            # Use cropped faces for encoding (internal matching)
             face_encodings = []
             for location in face_locations:
                 top, right, bottom, left = location
@@ -491,92 +435,100 @@ class FaceSimilarityApp:
                 messagebox.showwarning("No face detected", "No faces detected in reference image.")
                 return
             
+            # Save current state to history
             if self.reference_encodings:
                 self.search_history.append(self.reference_encodings.copy())
                 self.btn_back.config(state="normal")
             
-            if len(face_encodings) == 1:
-                self.reference_encodings = face_encodings
-                self.start_matching_process()
+            # Show face selection dialog if multiple faces detected
+            if len(face_encodings) > 1:
+                self.show_multi_face_selection(path, face_locations, face_encodings)
             else:
-                self.show_face_selection_dialog(path, face_locations, face_encodings)
+                # Single face - use it directly
+                self.reference_encodings = face_encodings
+                self.status_label.config(text="Using single face for matching...")
+                self.start_matching_process()
                 
         except Exception as e:
             messagebox.showerror("Error", f"Error processing reference image: {e}")
 
-    def show_face_selection_dialog(self, image_path, face_locations, face_encodings):
+    def show_multi_face_selection(self, image_path, face_locations, face_encodings):
+        """Show dialog for selecting which faces to use from reference image"""
         try:
-            pil_image = Image.open(image_path)
-            face_images = []
-            for location in face_locations:
-                top, right, bottom, left = location
-                margin = 20
-                expanded_top = max(0, top - margin)
-                expanded_bottom = min(pil_image.height, bottom + margin)
-                expanded_left = max(0, left - margin)
-                expanded_right = min(pil_image.width, right + margin)
-                face_img = pil_image.crop((expanded_left, expanded_top, expanded_right, expanded_bottom))
-                face_images.append(face_img)
+            dialog = MultiFaceSelectionDialog(self.root, image_path, face_locations, face_encodings)
+            selected_encodings = dialog.wait_for_selection()
             
-            dialog = FaceSelectionDialog(self.root, face_images, face_locations, image_path)
-            selected_indices = dialog.wait_for_selection()
-            
-            if selected_indices is not None:
-                if self.reference_encodings:
-                    self.search_history.append(self.reference_encodings.copy())
-                    self.btn_back.config(state="normal")
-                
-                selected_encodings = [face_encodings[i] for i in selected_indices]
+            if selected_encodings:
                 self.reference_encodings = selected_encodings
+                
+                if len(selected_encodings) == 1:
+                    self.status_label.config(text="Using selected face for matching...")
+                else:
+                    self.status_label.config(text=f"Using {len(selected_encodings)} selected faces for matching...")
+                
                 self.start_matching_process()
+            else:
+                # User cancelled or closed the dialog
+                self.status_label.config(text="Face selection cancelled. Please select a new reference image.")
                 
         except Exception as e:
             messagebox.showerror("Error", f"Error showing face selection: {e}")
 
     def start_matching_process(self):
+        """Start the face matching process with threading"""
         self.selected_images.clear()
-        self.update_file_management_buttons()
+        self.update_ui_state()
         self.status_label.config(text="Finding similar faces...")
         self.progress.start()
         threading.Thread(target=self.process_matches, daemon=True).start()
 
     def process_matches(self):
+        """Process matches in a separate thread"""
         matches = self.find_similar_faces(self.reference_encodings, self.tolerance.get())
         self.current_matches = matches
         self.root.after(0, lambda: self.show_matches(matches))
 
     def find_similar_faces(self, query_encodings, tolerance):
+        """Find similar faces - matches images containing ANY of the selected faces"""
         matched_paths = []
         
         for image_data in self.folder_face_data:
             path = image_data['path']
             face_encodings = image_data['encodings']
             
+            # Find the best matching face in this image against all reference faces
             best_distance = float('inf')
-            best_face_index = -1
+            best_match_found = False
             
-            for i, face_encoding in enumerate(face_encodings):
+            for face_encoding in face_encodings:
                 for ref_encoding in query_encodings:
                     distance = np.linalg.norm(face_encoding - ref_encoding)
                     if distance < best_distance:
                         best_distance = distance
-                        best_face_index = i
+                    if distance <= tolerance:
+                        best_match_found = True
+                        break  # No need to check other reference faces for this image face
+                if best_match_found:
+                    break  # No need to check other faces in this image
             
-            if best_distance <= tolerance and best_face_index != -1:
+            # If any face matches within tolerance, include the image
+            if best_match_found:
                 matched_paths.append({
                     'path': path,
                     'distance': best_distance,
-                    'face_index': best_face_index,
-                    'total_faces_in_image': len(face_encodings),
-                    'total_ref_faces': len(query_encodings)
+                    'total_faces': len(face_encodings),
+                    'ref_faces_used': len(query_encodings)
                 })
         
+        # Sort by similarity (lowest distance first)
         matched_paths.sort(key=lambda x: x['distance'])
         return matched_paths
 
     def show_matches(self, matched_paths):
+        """Display the matching results"""
         self.progress.stop()
         
+        # Clear previous matches
         for widget in self.matches_frame.winfo_children():
             widget.destroy()
         self.match_photos.clear()
@@ -586,23 +538,17 @@ class FaceSimilarityApp:
             Label(self.matches_frame, text="No matching faces found.", 
                  font=("Arial", 14), bg="#ffffff").pack(pady=20)
             self.status_label.config(text="No matches found")
-            self.btn_select_all.config(state="disabled")
+            self.update_ui_state()
             return
 
-        ref_faces_info = f" ({len(self.reference_encodings)} reference faces)" if len(self.reference_encodings) > 1 else ""
-        self.status_label.config(text=f"Found {len(matched_paths)} matching images{ref_faces_info} - Click images to select or use as reference")
-        self.btn_select_all.config(state="normal")
+        # Update status with reference face info
+        ref_count = len(self.reference_encodings)
+        ref_text = f" ({ref_count} reference face{'s' if ref_count > 1 else ''})"
+        
+        self.status_label.config(text=f"Found {len(matched_paths)} matching images{ref_text}")
+        self.instruction_label.config(text="💡 Click images to select | Double-click to use as new reference")
 
-        header_text = f"Found {len(matched_paths)} matching images{ref_faces_info}:"
-        header = Label(self.matches_frame, text=header_text, 
-                      font=("Arial", 16, "bold"), bg="#ffffff")
-        header.pack(pady=10)
-
-        instruction = Label(self.matches_frame, 
-                          text="💡 Click image to select for file management | Double-click to use as new reference", 
-                          font=("Arial", 10), bg="#ffffff", fg="#2196F3")
-        instruction.pack(pady=5)
-
+        # Create scrollable results area
         canvas = Canvas(self.matches_frame, bg="#ffffff")
         scrollbar = Scrollbar(self.matches_frame, orient="vertical", command=canvas.yview)
         scrollable_frame = Frame(canvas, bg="#ffffff")
@@ -614,55 +560,61 @@ class FaceSimilarityApp:
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+        # Display matches with FULL original images (no bounding boxes)
         cols = 4
         for idx, match_data in enumerate(matched_paths):
             path = match_data['path']
             distance = match_data['distance']
-            face_index = match_data['face_index']
-            total_faces = match_data['total_faces_in_image']
+            total_faces = match_data['total_faces']
+            ref_faces_used = match_data.get('ref_faces_used', 1)
 
+            # Create image frame
             img_frame = Frame(scrollable_frame, bg="#f0f0f0", relief="raised", 
                              borderwidth=2, padx=5, pady=5)
-            img_frame.grid(row=idx // cols, column=idx % cols, padx=10, pady=10, sticky="nsew")
+            img_frame.grid(row=idx // cols, column=idx % cols, padx=10, pady=10)
             self.image_frames[path] = img_frame
 
             try:
+                # Load and display FULL original image
                 img = Image.open(path)
-                img_thumbnail = img.copy()
-                img_thumbnail.thumbnail((200, 200), Image.Resampling.LANCZOS)
-                
-                photo = ImageTk.PhotoImage(img_thumbnail)
+                img.thumbnail((200, 200), Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(img)
                 self.match_photos.append(photo)
-                
+
+                # Clickable image label
                 img_label = Label(img_frame, image=photo, bg="#f0f0f0", cursor="hand2")
                 img_label.pack(pady=5)
                 
-                # Single click for selection, double-click for reference
+                # Bind click events
                 img_label.bind("<Button-1>", lambda e, p=path: self.toggle_image_selection(p))
-                img_label.bind("<Double-Button-1>", lambda e, p=path: self.use_image_as_new_reference(p))
+                img_label.bind("<Double-Button-1>", lambda e, p=path: self.use_image_as_reference(p))
                 img_frame.bind("<Button-1>", lambda e, p=path: self.toggle_image_selection(p))
-                img_frame.bind("<Double-Button-1>", lambda e, p=path: self.use_image_as_new_reference(p))
 
+                # Calculate similarity percentage
                 similarity = (1 - distance) * 100
+                
+                # Create info text
                 info_text = f"{os.path.basename(path)}\nSimilarity: {similarity:.1f}%"
                 if total_faces > 1:
                     info_text += f"\nFaces: {total_faces}"
+                if ref_faces_used > 1:
+                    info_text += f"\nMatched {ref_faces_used} ref faces"
                 
                 file_label = Label(img_frame, text=info_text, 
                                  font=("Arial", 10), bg="#f0f0f0", wraplength=200, 
                                  justify="center", cursor="hand2")
                 file_label.pack(pady=5)
                 file_label.bind("<Button-1>", lambda e, p=path: self.toggle_image_selection(p))
-                file_label.bind("<Double-Button-1>", lambda e, p=path: self.use_image_as_new_reference(p))
                 
             except Exception as e:
                 error_label = Label(img_frame, text=f"Error loading image\n{os.path.basename(path)}", 
                                   font=("Arial", 10), bg="#f0f0f0", fg="red")
                 error_label.pack(pady=20)
 
-        self.update_file_management_buttons()
+        self.update_ui_state()
 
     def toggle_image_selection(self, image_path):
+        """Toggle selection state of an image"""
         if image_path in self.selected_images:
             self.selected_images.remove(image_path)
             self.image_frames[image_path].config(bg="#f0f0f0")
@@ -670,35 +622,72 @@ class FaceSimilarityApp:
             self.selected_images.add(image_path)
             self.image_frames[image_path].config(bg="#e3f2fd")
         
-        self.update_file_management_buttons()
+        self.update_ui_state()
+        self.status_label.config(text=f"Selected {len(self.selected_images)} images")
 
-    def use_image_as_new_reference(self, image_path):
+    def use_image_as_reference(self, image_path):
+        """Use clicked image as new reference (all faces)"""
         image_data = next((data for data in self.folder_face_data if data['path'] == image_path), None)
-        if not image_data or not image_data['encodings']:
-            messagebox.showerror("Error", "Could not find face data for selected image.")
-            return
-        
-        if len(image_data['encodings']) == 1:
-            # Single face - use directly
+        if image_data and image_data['encodings']:
             if self.reference_encodings:
                 self.search_history.append(self.reference_encodings.copy())
                 self.btn_back.config(state="normal")
+            
+            # Use ALL faces from the clicked image
             self.reference_encodings = image_data['encodings']
+            face_count = len(image_data['encodings'])
+            self.status_label.config(text=f"Using {face_count} faces from clicked image for new search...")
             self.start_matching_process()
-        else:
-            # Multiple faces - show selection dialog
-            self.show_face_selection_dialog(image_path, image_data['locations'], image_data['encodings'])
 
-    def navigate_back(self):
-        if self.search_history:
-            previous_encodings = self.search_history.pop()
-            self.reference_encodings = previous_encodings
-            if not self.search_history:
-                self.btn_back.config(state="disabled")
-            self.status_label.config(text="Returning to previous search...")
-            self.start_matching_process()
+    def copy_selected_files(self):
+        """Copy selected files to destination folder"""
+        if not self.selected_images:
+            messagebox.showwarning("No Selection", "Please select one or more images first.")
+            return
+        
+        destination = filedialog.askdirectory(title="Select destination folder for copying")
+        if not destination:
+            return
+        
+        confirm = messagebox.askyesno("Confirm Copy", f"Copy {len(self.selected_images)} files to selected folder?")
+        if not confirm:
+            return
+        
+        success_count = 0
+        for image_path in self.selected_images:
+            try:
+                filename = os.path.basename(image_path)
+                dest_path = os.path.join(destination, filename)
+                shutil.copy2(image_path, dest_path)
+                success_count += 1
+            except Exception as e:
+                print(f"Error copying {image_path}: {e}")
+        
+        messagebox.showinfo("Success", f"Successfully copied {success_count} files!")
+        self.status_label.config(text=f"Copied {success_count} files to destination")
+
+    def cut_selected_files(self):
+        """Remove selected files from results (simulate cut)"""
+        if not self.selected_images:
+            messagebox.showwarning("No Selection", "Please select one or more images first.")
+            return
+        
+        confirm = messagebox.askyesno("Confirm Remove", 
+                                    f"Remove {len(self.selected_images)} selected files from results?")
+        if not confirm:
+            return
+        
+        # Remove selected images from current matches
+        self.current_matches = [match for match in self.current_matches 
+                              if match['path'] not in self.selected_images]
+        
+        # Clear selection and refresh display
+        self.selected_images.clear()
+        self.show_matches(self.current_matches)
+        self.status_label.config(text="Selected files removed from results")
 
     def select_all_results(self):
+        """Select all displayed images"""
         if self.current_matches:
             self.selected_images.clear()
             for match in self.current_matches:
@@ -706,39 +695,56 @@ class FaceSimilarityApp:
             for path in self.selected_images:
                 if path in self.image_frames:
                     self.image_frames[path].config(bg="#e3f2fd")
-            self.update_file_management_buttons()
+            self.update_ui_state()
 
     def clear_selection(self):
+        """Clear all selections"""
         self.selected_images.clear()
         for path in self.image_frames:
             self.image_frames[path].config(bg="#f0f0f0")
-        self.update_file_management_buttons()
+        self.update_ui_state()
 
-    def update_file_management_buttons(self):
-        if self.selected_images:
-            self.btn_file_manage.config(state="normal")
-            self.btn_clear_selection.config(state="normal")
-            self.status_label.config(text=f"Selected {len(self.selected_images)} images - Ready for file management")
-        else:
-            self.btn_file_manage.config(state="disabled")
-            self.btn_clear_selection.config(state="disabled")
-
-    def manage_files(self):
+    def use_selected_as_reference(self):
+        """Use all faces from selected images as new reference"""
         if not self.selected_images:
-            messagebox.showwarning("Warning", "No images selected.")
+            messagebox.showwarning("No Selection", "Please select one or more images first.")
             return
         
-        dialog = FileManagementDialog(self.root, list(self.selected_images), self.folder_path)
-        operation = dialog.wait_for_operation()
+        # Collect all face encodings from selected images
+        all_encodings = []
+        for image_path in self.selected_images:
+            image_data = next((data for data in self.folder_face_data if data['path'] == image_path), None)
+            if image_data:
+                all_encodings.extend(image_data['encodings'])
         
-        if operation == "cut":
-            # Remove cut files from current matches and selection
-            self.selected_images.clear()
-            self.update_file_management_buttons()
-            # Reload folder to reflect changes
-            self.status_label.config(text="Reloading folder after file operation...")
-            self.progress.start()
-            threading.Thread(target=self.load_folder_faces, daemon=True).start()
+        if all_encodings:
+            if self.reference_encodings:
+                self.search_history.append(self.reference_encodings.copy())
+                self.btn_back.config(state="normal")
+            
+            self.reference_encodings = all_encodings
+            self.status_label.config(text=f"Using {len(all_encodings)} faces from selection for new search...")
+            self.start_matching_process()
+
+    def navigate_back(self):
+        """Navigate back to previous search"""
+        if self.search_history:
+            self.reference_encodings = self.search_history.pop()
+            if not self.search_history:
+                self.btn_back.config(state="disabled")
+            self.status_label.config(text="Returning to previous search...")
+            self.start_matching_process()
+
+    def update_ui_state(self):
+        """Update the state of UI elements based on current selection"""
+        has_selection = len(self.selected_images) > 0
+        has_matches = len(self.current_matches) > 0
+        
+        self.btn_use_selected.config(state="normal" if has_selection else "disabled")
+        self.btn_copy.config(state="normal" if has_selection else "disabled")
+        self.btn_cut.config(state="normal" if has_selection else "disabled")
+        self.btn_select_all.config(state="normal" if has_matches else "disabled")
+        self.btn_clear_selection.config(state="normal" if has_selection else "disabled")
 
 if __name__ == "__main__":
     root = tk.Tk()
